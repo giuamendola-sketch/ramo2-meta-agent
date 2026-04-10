@@ -1,4 +1,5 @@
 import os
+import sys
 import httpx
 import anthropic
 import smtplib
@@ -7,6 +8,9 @@ import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+
+# Forza output immediato
+sys.stdout.reconfigure(line_buffering=True)
 
 # Config
 META_TOKEN = os.environ.get("META_ACCESS_TOKEN", "")
@@ -17,6 +21,12 @@ REPORT_EMAIL = os.environ.get("REPORT_EMAIL", "giu.amendola@gmail.com")
 BASE_URL = "https://graph.facebook.com/v23.0"
 ACCOUNT_ID = "act_3868212556760579"
 
+print(f"Avvio agente Ramo2...", flush=True)
+print(f"META_TOKEN presente: {bool(META_TOKEN)}", flush=True)
+print(f"ANTHROPIC_KEY presente: {bool(ANTHROPIC_KEY)}", flush=True)
+print(f"GMAIL_USER: {GMAIL_USER}", flush=True)
+print(f"RUN_NOW: {os.environ.get('RUN_NOW', 'false')}", flush=True)
+
 client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
 def meta_get(endpoint: str, params: dict = {}):
@@ -25,27 +35,18 @@ def meta_get(endpoint: str, params: dict = {}):
     return r.json()
 
 def collect_data():
-    """Raccoglie tutti i dati delle campagne Meta."""
-    print("Raccolta dati campagne...")
-    
-    # Campagne
+    print("Raccolta dati campagne...", flush=True)
     campaigns = meta_get(f"{ACCOUNT_ID}/campaigns", {
         "fields": "id,name,status,objective,daily_budget,lifetime_budget"
     })
-    
-    # Account insights ultimi 3 giorni
     account_insights = meta_get(f"{ACCOUNT_ID}/insights", {
         "fields": "impressions,clicks,spend,reach,ctr,cpc,cpp,frequency,actions,action_values",
         "date_preset": "last_3d"
     })
-    
-    # Account insights ultimi 7 giorni
     account_insights_7d = meta_get(f"{ACCOUNT_ID}/insights", {
         "fields": "impressions,clicks,spend,reach,ctr,cpc,cpp,frequency,actions,action_values",
         "date_preset": "last_7d"
     })
-
-    # Per ogni campagna attiva, prendi insights e adset
     campaign_details = []
     for camp in campaigns.get("data", []):
         if camp.get("status") == "ACTIVE":
@@ -58,7 +59,7 @@ def collect_data():
                 "date_preset": "last_7d"
             })
             adsets = meta_get(f"{camp['id']}/adsets", {
-                "fields": "id,name,status,daily_budget,optimization_goal,targeting"
+                "fields": "id,name,status,daily_budget,optimization_goal"
             })
             adset_details = []
             for adset in adsets.get("data", []):
@@ -77,7 +78,7 @@ def collect_data():
                 "insights_7d": insights_7d.get("data", []),
                 "adsets": adset_details
             })
-    
+    print(f"Raccolte {len(campaign_details)} campagne attive.", flush=True)
     return {
         "account_insights_3d": account_insights.get("data", []),
         "account_insights_7d": account_insights_7d.get("data", []),
@@ -86,9 +87,7 @@ def collect_data():
     }
 
 def analyze_with_claude(data: dict) -> str:
-    """Invia i dati a Claude per l'analisi."""
-    print("Analisi con Claude...")
-    
+    print("Analisi con Claude...", flush=True)
     prompt = f"""Sei un esperto media buyer specializzato in Meta Ads per un'azienda italiana di arredamento chiamata Ramo2.
 
 Analizza questi dati delle campagne Meta Ads di Ramo2 e produci un report completo in italiano.
@@ -121,106 +120,80 @@ Il report deve includere:
    Per ogni campagna attiva:
    - Performance vs soglie Ramo2
    - Valutazione: 🟢 Ottima / 🟡 Buona / 🟠 Da migliorare / 🔴 Critica
-   - Osservazioni specifiche
 
 3. ANALISI ADSET
    - Adset migliori e peggiori
-   - Eventuali segnali di saturazione del pubblico (frequenza alta)
-   - Distribuzione budget tra adset
+   - Segnali di saturazione del pubblico
 
 4. INDICATORI AGGIUNTIVI
    - Efficienza della spesa
-   - Qualità del traffico generato
-   - Qualsiasi anomalia o pattern interessante
+   - Anomalie o pattern interessanti
 
 5. RACCOMANDAZIONI
-   Divise in:
    A) AZIONI IMMEDIATE (richiedono approvazione):
-      - Modifiche budget specifiche con motivazione
-      - Campagne da mettere in pausa con motivazione
-      - Nuove campagne o adset da creare
-   
+      - Modifiche budget con motivazione
+      - Campagne da pausare con motivazione
    B) AZIONI A MEDIO TERMINE:
-      - Strategie per migliorare le conversioni
-      - Suggerimenti su targeting e creatività
+      - Strategie per migliorare conversioni
       - Test A/B da considerare
 
-Sii diretto, pratico e specifico. Usa numeri reali dai dati. Non essere generico.
-"""
-    
+Sii diretto, pratico e specifico. Usa numeri reali dai dati."""
+
     message = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4000,
         messages=[{"role": "user", "content": prompt}]
     )
-    
+    print("Analisi completata.", flush=True)
     return message.content[0].text
 
-def send_email(report: str, data: dict):
-    """Invia il report via email."""
-    print("Invio email...")
-    
+def send_email(report: str):
+    print("Invio email...", flush=True)
     day = datetime.now().strftime("%A %d %B %Y")
-    
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"🎯 Report Meta Ads Ramo2 — {day}"
     msg["From"] = GMAIL_USER
     msg["To"] = REPORT_EMAIL
-    
-    # Converti il report in HTML semplice
-    html_report = report.replace("\n", "<br>").replace("🟢", "<span style='color:green'>🟢</span>").replace("🔴", "<span style='color:red'>🔴</span>")
-    
+    html_report = report.replace("\n", "<br>")
     html = f"""
     <html>
     <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #1a1a2e;">🎯 Report Meta Ads Ramo2</h2>
         <p style="color: #666;">Generato il {day}</p>
         <hr>
-        <div style="line-height: 1.8;">
-            {html_report}
-        </div>
+        <div style="line-height: 1.8;">{html_report}</div>
         <hr>
         <p style="color: #999; font-size: 12px;">Report generato automaticamente dall'agente Ramo2 Media Buyer</p>
     </body>
-    </html>
-    """
-    
-    part = MIMEText(html, "html")
-    msg.attach(part)
-    
+    </html>"""
+    msg.attach(MIMEText(html, "html"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL_USER, GMAIL_PASSWORD)
         server.sendmail(GMAIL_USER, REPORT_EMAIL, msg.as_string())
-    
-    print(f"Email inviata a {REPORT_EMAIL}")
+    print(f"Email inviata a {REPORT_EMAIL}", flush=True)
 
 def run_agent():
-    """Esegue l'analisi completa."""
-    print(f"\n{'='*50}")
-    print(f"Avvio agente: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"{'='*50}")
-    
+    print(f"\n{'='*50}", flush=True)
+    print(f"Avvio analisi: {datetime.now().strftime('%Y-%m-%d %H:%M')}", flush=True)
+    print(f"{'='*50}", flush=True)
     try:
         data = collect_data()
         report = analyze_with_claude(data)
-        send_email(report, data)
-        print("Agente completato con successo.")
+        send_email(report)
+        print("Agente completato con successo.", flush=True)
     except Exception as e:
-        print(f"Errore agente: {e}")
+        print(f"Errore agente: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
 
-# Scheduling: lunedì, mercoledì, venerdì alle 08:00
 schedule.every().monday.at("08:00").do(run_agent)
 schedule.every().wednesday.at("08:00").do(run_agent)
 schedule.every().friday.at("08:00").do(run_agent)
 
 if __name__ == "__main__":
-    print("Agente Ramo2 Meta Buyer avviato.")
-    print("Prossime esecuzioni: Lunedì, Mercoledì, Venerdì alle 08:00")
-    
-    # Esegui subito al primo avvio per test
+    print("Scheduler avviato. Prossime esecuzioni: Lun/Mer/Ven alle 08:00", flush=True)
     if os.environ.get("RUN_NOW", "false").lower() == "true":
         run_agent()
-    
     while True:
         schedule.run_pending()
         time.sleep(60)
