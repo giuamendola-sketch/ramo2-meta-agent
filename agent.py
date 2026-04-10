@@ -2,30 +2,24 @@ import os
 import sys
 import httpx
 import anthropic
-import smtplib
 import schedule
 import time
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
-# Forza output immediato
 sys.stdout.reconfigure(line_buffering=True)
 
-# Config
 META_TOKEN = os.environ.get("META_ACCESS_TOKEN", "")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-GMAIL_USER = os.environ.get("GMAIL_USER", "")
-GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+SENDGRID_KEY = os.environ.get("SENDGRID_API_KEY", "")
 REPORT_EMAIL = os.environ.get("REPORT_EMAIL", "giu.amendola@gmail.com")
+SENDER_EMAIL = os.environ.get("GMAIL_USER", "giu.amendola@gmail.com")
 BASE_URL = "https://graph.facebook.com/v23.0"
 ACCOUNT_ID = "act_3868212556760579"
 
 print(f"Avvio agente Ramo2...", flush=True)
-print(f"META_TOKEN presente: {bool(META_TOKEN)}", flush=True)
-print(f"ANTHROPIC_KEY presente: {bool(ANTHROPIC_KEY)}", flush=True)
-print(f"GMAIL_USER: {GMAIL_USER}", flush=True)
-print(f"RUN_NOW: {os.environ.get('RUN_NOW', 'false')}", flush=True)
+print(f"META_TOKEN: {bool(META_TOKEN)}", flush=True)
+print(f"ANTHROPIC_KEY: {bool(ANTHROPIC_KEY)}", flush=True)
+print(f"SENDGRID_KEY: {bool(SENDGRID_KEY)}", flush=True)
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
@@ -39,7 +33,7 @@ def collect_data():
     campaigns = meta_get(f"{ACCOUNT_ID}/campaigns", {
         "fields": "id,name,status,objective,daily_budget,lifetime_budget"
     })
-    account_insights = meta_get(f"{ACCOUNT_ID}/insights", {
+    account_insights_3d = meta_get(f"{ACCOUNT_ID}/insights", {
         "fields": "impressions,clicks,spend,reach,ctr,cpc,cpp,frequency,actions,action_values",
         "date_preset": "last_3d"
     })
@@ -50,7 +44,7 @@ def collect_data():
     campaign_details = []
     for camp in campaigns.get("data", []):
         if camp.get("status") == "ACTIVE":
-            insights = meta_get(f"{camp['id']}/insights", {
+            insights_3d = meta_get(f"{camp['id']}/insights", {
                 "fields": "impressions,clicks,spend,reach,ctr,cpc,cpp,frequency,actions,action_values,cost_per_action_type",
                 "date_preset": "last_3d"
             })
@@ -74,13 +68,13 @@ def collect_data():
                     })
             campaign_details.append({
                 "campaign": camp,
-                "insights_3d": insights.get("data", []),
+                "insights_3d": insights_3d.get("data", []),
                 "insights_7d": insights_7d.get("data", []),
                 "adsets": adset_details
             })
     print(f"Raccolte {len(campaign_details)} campagne attive.", flush=True)
     return {
-        "account_insights_3d": account_insights.get("data", []),
+        "account_insights_3d": account_insights_3d.get("data", []),
         "account_insights_7d": account_insights_7d.get("data", []),
         "campaigns": campaign_details,
         "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -130,7 +124,7 @@ Il report deve includere:
    - Anomalie o pattern interessanti
 
 5. RACCOMANDAZIONI
-   A) AZIONI IMMEDIATE (richiedono approvazione):
+   A) AZIONI IMMEDIATE (richiedono tua approvazione):
       - Modifiche budget con motivazione
       - Campagne da pausare con motivazione
    B) AZIONI A MEDIO TERMINE:
@@ -148,12 +142,8 @@ Sii diretto, pratico e specifico. Usa numeri reali dai dati."""
     return message.content[0].text
 
 def send_email(report: str):
-    print("Invio email...", flush=True)
-    day = datetime.now().strftime("%A %d %B %Y")
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"🎯 Report Meta Ads Ramo2 — {day}"
-    msg["From"] = GMAIL_USER
-    msg["To"] = REPORT_EMAIL
+    print("Invio email via SendGrid...", flush=True)
+    day = datetime.now().strftime("%d/%m/%Y")
     html_report = report.replace("\n", "<br>")
     html = f"""
     <html>
@@ -166,11 +156,24 @@ def send_email(report: str):
         <p style="color: #999; font-size: 12px;">Report generato automaticamente dall'agente Ramo2 Media Buyer</p>
     </body>
     </html>"""
-    msg.attach(MIMEText(html, "html"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(GMAIL_USER, GMAIL_PASSWORD)
-        server.sendmail(GMAIL_USER, REPORT_EMAIL, msg.as_string())
-    print(f"Email inviata a {REPORT_EMAIL}", flush=True)
+
+    response = httpx.post(
+        "https://api.sendgrid.com/v3/mail/send",
+        headers={
+            "Authorization": f"Bearer {SENDGRID_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "personalizations": [{"to": [{"email": REPORT_EMAIL}]}],
+            "from": {"email": SENDER_EMAIL, "name": "Ramo2 Media Agent"},
+            "subject": f"🎯 Report Meta Ads Ramo2 — {day}",
+            "content": [{"type": "text/html", "value": html}]
+        },
+        timeout=30
+    )
+    print(f"SendGrid status: {response.status_code}", flush=True)
+    if response.status_code not in [200, 202]:
+        print(f"SendGrid error: {response.text}", flush=True)
 
 def run_agent():
     print(f"\n{'='*50}", flush=True)
@@ -182,7 +185,7 @@ def run_agent():
         send_email(report)
         print("Agente completato con successo.", flush=True)
     except Exception as e:
-        print(f"Errore agente: {e}", flush=True)
+        print(f"Errore: {e}", flush=True)
         import traceback
         traceback.print_exc()
 
