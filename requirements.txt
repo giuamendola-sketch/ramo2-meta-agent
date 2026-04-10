@@ -1,0 +1,5 @@
+anthropic
+httpx
+schedule
+smtplib2
+python-dotenv
